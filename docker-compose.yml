@@ -1,0 +1,143 @@
+name: tools-stack
+
+services:
+  sonardb-vault-agent:
+    image: hashicorp/vault:latest
+    container_name: sonardb-vault-agent
+    restart: unless-stopped
+    user: "0:0"
+    command: agent -config=/vault/agent/config.hcl
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - C:\laragon\www\vault\sonardb-agent:/vault/agent
+      - C:\laragon\www\vault\runtime\sonardb-agent:/vault/runtime
+      - C:\laragon\www\vault\runtime\sonardb-secrets:/vault/secrets
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+  sonardb:
+    image: postgres:16.4
+    container_name: sonardb
+    restart: unless-stopped
+    user: "0:0"
+    depends_on:
+      - sonardb-vault-agent
+    environment:
+      POSTGRES_USER_FILE: /vault/secrets/POSTGRES_USER
+      POSTGRES_DB_FILE: /vault/secrets/POSTGRES_DB
+      POSTGRES_PASSWORD_FILE: /vault/secrets/POSTGRES_PASSWORD
+    volumes:
+      - sonardb_data:/var/lib/postgresql/data
+      - C:\laragon\www\vault\runtime\sonardb-secrets:/vault/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar -d sonar"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+  sonarqube-vault-agent:
+    image: hashicorp/vault:latest
+    container_name: sonarqube-vault-agent
+    restart: unless-stopped
+    user: "0:0"
+    command: agent -config=/vault/agent/config.hcl
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - C:\laragon\www\vault\sonarqube-agent:/vault/agent
+      - C:\laragon\www\vault\runtime\sonarqube-agent:/vault/runtime
+      - C:\laragon\www\vault\runtime\sonarqube-secrets:/vault/secrets
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: sonarqube
+    restart: unless-stopped
+    depends_on:
+      sonardb:
+        condition: service_healthy
+      sonarqube-vault-agent:
+        condition: service_started
+    ports:
+      - "127.0.0.1:9001:9000"
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - |
+        test -f /vault/secrets/sonarqube.env
+        . /vault/secrets/sonarqube.env
+        export SONAR_JDBC_URL SONAR_JDBC_USERNAME SONAR_JDBC_PASSWORD
+        exec /opt/sonarqube/docker/entrypoint.sh
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+      - C:\laragon\www\vault\runtime\sonarqube-secrets:/vault/secrets:ro
+    networks:
+      - backend
+      - frontend
+    security_opt:
+      - no-new-privileges:true
+
+  jenkins:
+    image: jenkins/jenkins:2.504.1-lts-jdk21
+    container_name: jenkins
+    restart: unless-stopped
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:8081:8080"
+      - "127.0.0.1:50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+    networks:
+      - frontend
+    security_opt:
+      - no-new-privileges:true
+
+  owaspzap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    container_name: owaspzap
+    restart: unless-stopped
+    profiles:
+      - security
+    ports:
+      - "127.0.0.1:8080:8080"
+    command: >
+      zap.sh -daemon -host 0.0.0.0 -port 8080
+      -config api.disablekey=true
+      -config api.addrs.addr.name=127.0.0.1
+      -config api.addrs.addr.regex=false
+    volumes:
+      - zap_data:/home/zap/.ZAP
+    networks:
+      - frontend
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  sonardb_data:
+  sonardb_secrets:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  sonarqube_secrets:
+  jenkins_home:
+  zap_data:
